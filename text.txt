@@ -1,0 +1,14 @@
+------ SQL command for DATA BASE ---------
+
+1. Login to MySQL
+Open your terminal or command prompt and run:
+
+mysql -u root -p
+
+USE movie_booking;
+
+SELECT * FROM users;
+SELECT * FROM movies;
+SELECT * FROM theaters;
+SELECT * FROM shows;
+SELECT * FROM bookings;
