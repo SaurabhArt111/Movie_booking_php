@@ -1,18 +1,18 @@
 <?php
 require_once '../config.php';
-if (session_status() === PHP_SESSION_NONE) session_start();
+requireAdmin($pdo);
 
-if (!isset($_SESSION['admin_id'])) {
-    header("Location: login.php");
+if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+    header("Location: manage_shows.php");
     exit;
 }
+csrf_verify();
 
-if (isset($_GET['id'])) {
-    $id = intval($_GET['id']);
+if (isset($_POST['id'])) {
+    $id = intval($_POST['id']);
     $stmt = $pdo->prepare("DELETE FROM shows WHERE id = ?");
     $stmt->execute([$id]);
 }
 
 header("Location: manage_shows.php");
 exit;
-?>

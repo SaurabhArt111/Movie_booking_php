@@ -1,0 +1,10 @@
+# Defense in depth: this folder should only ever serve images. Even though
+# uploaded files are now validated (real content-type check, random names,
+# no .php extensions can be produced), this blocks script execution here
+# outright in case that ever changes or the server is misconfigured.
+# (Deliberately does NOT use php_flag/php_value — those crash Apache with a
+# 500 error on any server running PHP as FPM/CGI instead of mod_php.)
+<FilesMatch "\.(php|phtml|php3|php4|php5|php7|pht|phar|cgi|pl|py)$">
+    Require all denied
+</FilesMatch>
+Options -ExecCGI -Indexes

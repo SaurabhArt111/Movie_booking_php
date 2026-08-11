@@ -1,4 +1,10 @@
 -- Movie Booking Data
+-- To import: mysql -u root -p < movie_booking.sql
+-- (the line above is an instruction for your terminal, not SQL — it must not
+-- appear unescaped as the first line of this file, or the import fails
+-- immediately with a syntax error before anything else runs)
+
+-- Movie Booking Data
 mysql -u root -p
 
 
@@ -70,7 +76,38 @@ CREATE TABLE bookings (
     FOREIGN KEY (show_id) REFERENCES shows(id) ON DELETE CASCADE
 );
 
+-- Booked seats table (NEW)
+-- Records exactly which seat labels (e.g. "A1", "B7") are taken for a given
+-- show, so the seat map can show real availability instead of just a count.
+-- The UNIQUE constraint is what actually prevents two customers from ever
+-- being sold the same seat, even if two bookings are submitted at the same
+-- instant — the database itself rejects the second INSERT.
+CREATE TABLE booked_seats (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    show_id INT NOT NULL,
+    seat_label VARCHAR(10) NOT NULL,
+    booking_id INT NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE KEY uniq_show_seat (show_id, seat_label),
+    FOREIGN KEY (show_id) REFERENCES shows(id) ON DELETE CASCADE,
+    FOREIGN KEY (booking_id) REFERENCES bookings(id) ON DELETE CASCADE
+);
+
+-- Login attempts table (NEW)
+-- Backs the login-throttling in config.php: after several failed attempts
+-- for the same account+IP within the cooldown window, further attempts are
+-- blocked for a while instead of being checked immediately (slows down
+-- password-guessing).
+CREATE TABLE login_attempts (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    identifier VARCHAR(191) NOT NULL,
+    success TINYINT(1) NOT NULL DEFAULT 0,
+    attempted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    INDEX idx_identifier_time (identifier, attempted_at)
+);
+
 -- Insert sample users
+-- Login: admin@gmail.com / saurabh123
 INSERT INTO users (username, email, password, full_name, phone, role)
 VALUES ('admin', 'admin@gmail.com','$2y$10$kwZiAbY.dE1n/jp9tVUVBOCGpVp4RjE522fEvwT.Vr2xhR7GksKd6', 'Admin', '1234567890', 'admin');
 
@@ -86,20 +123,23 @@ INSERT INTO theaters (name, location, total_seats) VALUES
 ('INOX Theater', 'Metro Plaza, Central', 120),
 ('Cineplex Multiplex', 'Grand Square, Uptown', 180);
 
--- Insert sample shows
-INSERT INTO shows (movie_id, theater_id, show_date, show_time, price, available_seats) VALUES
-(1, 1, '2026-02-12', '14:00:00', 350.00, 150),
-(1, 1, '2026-02-12', '18:00:00', 300.00, 150),
-(2, 2, '2026-02-12', '15:30:00', 280.00, 120),
-(2, 2, '2026-02-12', '19:30:00', 320.00, 120),
-(3, 3, '2026-02-12', '16:00:00', 270.00, 180),
-(3, 3, '2026-02-12', '20:00:00', 310.00, 180);
+-- Insert sample shows (total_seats added — the original file omitted this
+-- required column, which made the INSERT fail on import). Dates are relative
+-- to today so the sample shows are never stuck in the past.
+INSERT INTO shows (movie_id, theater_id, show_date, show_time, price, total_seats, available_seats) VALUES
+(1, 1, DATE_ADD(CURDATE(), INTERVAL 2 DAY), '14:00:00', 350.00, 150, 150),
+(1, 1, DATE_ADD(CURDATE(), INTERVAL 2 DAY), '18:00:00', 300.00, 150, 150),
+(2, 2, DATE_ADD(CURDATE(), INTERVAL 3 DAY), '15:30:00', 280.00, 120, 120),
+(2, 2, DATE_ADD(CURDATE(), INTERVAL 3 DAY), '19:30:00', 320.00, 120, 120),
+(3, 3, DATE_ADD(CURDATE(), INTERVAL 4 DAY), '16:00:00', 270.00, 180, 180),
+(3, 3, DATE_ADD(CURDATE(), INTERVAL 4 DAY), '20:00:00', 310.00, 180, 180);
 
--- Show tabels
+-- Show tables
 SELECT * FROM users;
 SELECT * FROM movies;
 SELECT * FROM theaters;
 SELECT * FROM shows;
 SELECT * FROM bookings;
+
 --admin@gmail.com
 --saurabh123

@@ -1,19 +1,14 @@
 <?php
 require_once '../config.php';
-
-if (session_status() === PHP_SESSION_NONE)
-    session_start();
-
-if (!isset($_SESSION['admin_id'])) {
-    header("Location: login.php");
-    exit;
-}
+requireAdmin($pdo);
 
 // Fetch movies and theaters
 $movies = $pdo->query("SELECT id, title FROM movies ORDER BY title")->fetchAll();
 $theaters = $pdo->query("SELECT id, name FROM theaters ORDER BY name")->fetchAll();
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    csrf_verify();
+
     $movie_id = intval($_POST['movie_id']);
     $theater_id = intval($_POST['theater_id']);
     $show_date = $_POST['show_date'];
@@ -21,18 +16,32 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $price = floatval($_POST['price']);
     $total_seats = intval($_POST['total_seats']);
 
-    // Initially, available seats = total seats
-    $available_seats = $total_seats;
+    $validMovie = in_array($movie_id, array_column($movies, 'id'));
+    $validTheater = in_array($theater_id, array_column($theaters, 'id'));
+    $validDate = (bool) DateTime::createFromFormat('Y-m-d', $show_date);
+    $validTime = (bool) DateTime::createFromFormat('H:i', $show_time) || (bool) DateTime::createFromFormat('H:i:s', $show_time);
 
-    // ✅ Fixed query — include total_seats in insert
-    $stmt = $pdo->prepare("
-        INSERT INTO shows (movie_id, theater_id, show_date, show_time, price, total_seats, available_seats)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-    ");
-    $stmt->execute([$movie_id, $theater_id, $show_date, $show_time, $price, $total_seats, $available_seats]);
+    if (!$validMovie || !$validTheater) {
+        $error = 'Please choose a valid movie and theater.';
+    } elseif (!$validDate || !$validTime) {
+        $error = 'Please enter a valid date and time.';
+    } elseif ($price <= 0) {
+        $error = 'Price must be greater than zero.';
+    } elseif ($total_seats <= 0) {
+        $error = 'Total seats must be greater than zero.';
+    } else {
+        // Initially, available seats = total seats
+        $available_seats = $total_seats;
 
-    header("Location: manage_shows.php");
-    exit;
+        $stmt = $pdo->prepare("
+            INSERT INTO shows (movie_id, theater_id, show_date, show_time, price, total_seats, available_seats)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        ");
+        $stmt->execute([$movie_id, $theater_id, $show_date, $show_time, $price, $total_seats, $available_seats]);
+
+        header("Location: manage_shows.php");
+        exit;
+    }
 }
 
 ?>
@@ -404,7 +413,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             <p>Schedule a new movie show for your theater</p>
         </div>
 
+        <?php if (!empty($error)): ?>
+            <div style="background: linear-gradient(45deg, #e74c3c, #c0392b); color: #fff; padding: 1rem 1.5rem; border-radius: 12px; margin-bottom: 1.5rem;">
+                ⚠️ <?= e($error) ?>
+            </div>
+        <?php endif; ?>
+
         <form method="post" id="showForm">
+            <?= csrf_field() ?>
             <div class="form-group">
                 <label for="movie_id">🍿 Movie</label>
                 <select name="movie_id" id="movie_id" required>

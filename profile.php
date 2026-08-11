@@ -6,32 +6,47 @@ if (!isLoggedIn()) {
 }
 
 // Handle profile update
-if ($_POST['action'] ?? '' === 'update_profile') {
-    $full_name = sanitize($_POST['full_name']);
-    $email = htmlspecialchars(trim($_POST['email']), ENT_QUOTES, 'UTF-8');
-    $phone = sanitize($_POST['phone']);
+if (($_POST['action'] ?? '') === 'update_profile') {
+    csrf_verify();
 
-    try {
-        $stmt = $pdo->prepare("UPDATE users SET full_name = ?, email = ?, phone = ? WHERE id = ?");
-        $stmt->execute([$full_name, $email, $phone, $_SESSION['user_id']]);
-        $_SESSION['full_name'] = $full_name;
-        showAlert('Profile updated successfully!', 'success');
-    } catch (PDOException $e) {
-        if ($e->getCode() == 23000) {
-            showAlert('Email already exists!', 'error');
-        } else {
-            showAlert('Profile update failed!', 'error');
+    $full_name = sanitize($_POST['full_name'] ?? '');
+    $email = sanitize($_POST['email'] ?? '');
+    $phone = sanitize($_POST['phone'] ?? '');
+
+    if ($full_name === '') {
+        showAlert('Please enter your full name.', 'error');
+    } elseif (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
+        showAlert('Please enter a valid email address.', 'error');
+    } elseif ($phone !== '' && !preg_match('/^[0-9+\-\s]{7,15}$/', $phone)) {
+        showAlert('Please enter a valid phone number.', 'error');
+    } else {
+        try {
+            $stmt = $pdo->prepare("UPDATE users SET full_name = ?, email = ?, phone = ? WHERE id = ?");
+            $stmt->execute([$full_name, $email, $phone, $_SESSION['user_id']]);
+            $_SESSION['full_name'] = $full_name;
+            showAlert('Profile updated successfully!', 'success');
+        } catch (PDOException $e) {
+            if ($e->getCode() == 23000) {
+                showAlert('Email already exists!', 'error');
+            } else {
+                error_log('Profile update failed: ' . $e->getMessage());
+                showAlert('Profile update failed!', 'error');
+            }
         }
     }
 }
 
 // Handle password change
-if ($_POST['action'] ?? '' === 'change_password') {
-    $current_password = $_POST['current_password'];
-    $new_password = $_POST['new_password'];
-    $confirm_password = $_POST['confirm_password'];
+if (($_POST['action'] ?? '') === 'change_password') {
+    csrf_verify();
 
-    if ($new_password !== $confirm_password) {
+    $current_password = $_POST['current_password'] ?? '';
+    $new_password = $_POST['new_password'] ?? '';
+    $confirm_password = $_POST['confirm_password'] ?? '';
+
+    if (strlen($new_password) < 8) {
+        showAlert('New password must be at least 8 characters.', 'error');
+    } elseif ($new_password !== $confirm_password) {
         showAlert('New passwords do not match!', 'error');
     } else {
         // Verify current password
@@ -39,7 +54,7 @@ if ($_POST['action'] ?? '' === 'change_password') {
         $stmt->execute([$_SESSION['user_id']]);
         $user = $stmt->fetch();
 
-        if (password_verify($current_password, $user['password'])) {
+        if ($user && password_verify($current_password, $user['password'])) {
             $hashed_password = password_hash($new_password, PASSWORD_DEFAULT);
             $stmt = $pdo->prepare("UPDATE users SET password = ? WHERE id = ?");
             $stmt->execute([$hashed_password, $_SESSION['user_id']]);
@@ -703,6 +718,7 @@ $user = $stmt->fetch();
             <h2 class="section-title">Update Profile Information</h2>
             <form method="POST">
                 <input type="hidden" name="action" value="update_profile">
+                <?= csrf_field() ?>
                 <div class="form-grid">
                     <div class="form-group">
                         <label>Full Name:</label>
@@ -726,6 +742,7 @@ $user = $stmt->fetch();
             <h2 class="section-title">Change Password</h2>
             <form method="POST">
                 <input type="hidden" name="action" value="change_password">
+                <?= csrf_field() ?>
                 <div class="form-group">
                     <label>Current Password:</label>
                     <input type="password" name="current_password" required>

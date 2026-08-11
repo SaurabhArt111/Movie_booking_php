@@ -1,17 +1,30 @@
 <?php
 require_once '../config.php';
-if (session_status() === PHP_SESSION_NONE)
-    session_start();
+requireAdmin($pdo);
 
-if (!isset($_SESSION['admin_id'])) {
-    header("Location: login.php");
+// Deleting is a state change — POST + CSRF only, never a plain GET link
+// (a GET link can be triggered from another site just by loading an image).
+if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+    header("Location: manage_movies.php");
     exit;
 }
+csrf_verify();
 
-if (isset($_GET['id'])) {
-    $id = intval($_GET['id']);
+if (isset($_POST['id'])) {
+    $id = intval($_POST['id']);
 
-    // Delete movie
+    // Clean up the poster file too, if there is one under our uploads dir.
+    $stmt = $pdo->prepare("SELECT poster_url FROM movies WHERE id = ?");
+    $stmt->execute([$id]);
+    $movie = $stmt->fetch();
+    if ($movie && !empty($movie['poster_url'])) {
+        $path = realpath('../' . $movie['poster_url']);
+        $uploadsRoot = realpath('../uploads/movies/');
+        if ($path && $uploadsRoot && strpos($path, $uploadsRoot) === 0 && is_file($path)) {
+            @unlink($path);
+        }
+    }
+
     $stmt = $pdo->prepare("DELETE FROM movies WHERE id = ?");
     $stmt->execute([$id]);
 }

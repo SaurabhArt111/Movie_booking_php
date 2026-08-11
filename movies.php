@@ -8,40 +8,74 @@ if (!isLoggedIn()) {
 $movie_id = $_GET['movie'] ?? null;
 
 // Handle booking
-if ($_POST['action'] ?? '' === 'book_ticket') {
-    $show_id = (int) $_POST['show_id'];
-    $seats = (int) $_POST['seats'];
+if (($_POST['action'] ?? '') === 'book_ticket') {
+    csrf_verify();
 
-    if ($seats <= 0) {
-        showAlert('Please select valid number of seats!', 'error');
+    $show_id = (int) ($_POST['show_id'] ?? 0);
+    $rawSeats = trim($_POST['selected_seats'] ?? '');
+    $requested = $rawSeats === '' ? [] : array_unique(array_map('trim', explode(',', $rawSeats)));
+
+    // Get show details
+    $stmt = $pdo->prepare("SELECT * FROM shows WHERE id = ?");
+    $stmt->execute([$show_id]);
+    $show = $stmt->fetch();
+
+    if (!$show) {
+        showAlert('That show could not be found.', 'error');
+    } elseif (strtotime($show['show_date'] . ' ' . $show['show_time']) < time()) {
+        showAlert('This show has already ended.', 'error');
+    } elseif (empty($requested)) {
+        showAlert('Please select at least one seat!', 'error');
+    } elseif (count($requested) > MAX_SEATS_PER_BOOKING) {
+        showAlert('You can book at most ' . MAX_SEATS_PER_BOOKING . ' seats at a time.', 'error');
     } else {
-        // Get show details
-        $stmt = $pdo->prepare("SELECT * FROM shows WHERE id = ?");
-        $stmt->execute([$show_id]);
-        $show = $stmt->fetch();
-
-        if ($show && $show['available_seats'] >= $seats) {
-            $total_amount = $show['price'] * $seats;
+        // Every submitted label must actually belong to this show's seat grid.
+        $invalid = array_filter($requested, fn($s) => !isValidSeatForShow($s, $show['total_seats']));
+        if (!empty($invalid)) {
+            showAlert('One or more selected seats are not valid for this show.', 'error');
+        } else {
+            $seatCount = count($requested);
+            $total_amount = $show['price'] * $seatCount;
 
             try {
                 $pdo->beginTransaction();
 
-                // Create booking
-                $stmt = $pdo->prepare("INSERT INTO bookings (user_id, show_id, seats_booked, total_amount) VALUES (?, ?, ?, ?)");
-                $stmt->execute([$_SESSION['user_id'], $show_id, $seats, $total_amount]);
+                // Lock the show row so two concurrent bookings can't both
+                // see the same "seats available" count.
+                $stmt = $pdo->prepare("SELECT available_seats FROM shows WHERE id = ? FOR UPDATE");
+                $stmt->execute([$show_id]);
+                $locked = $stmt->fetch();
 
-                // Update available seats
+                if (!$locked || $locked['available_seats'] < $seatCount) {
+                    throw new RuntimeException('not_enough_seats');
+                }
+
+                $stmt = $pdo->prepare("INSERT INTO bookings (user_id, show_id, seats_booked, total_amount) VALUES (?, ?, ?, ?)");
+                $stmt->execute([$_SESSION['user_id'], $show_id, $seatCount, $total_amount]);
+                $booking_id = $pdo->lastInsertId();
+
+                // The UNIQUE(show_id, seat_label) constraint on booked_seats
+                // is the real safety net here — even under a race condition
+                // this INSERT fails for any seat someone else just took.
+                $seatStmt = $pdo->prepare("INSERT INTO booked_seats (show_id, seat_label, booking_id) VALUES (?, ?, ?)");
+                foreach ($requested as $seatLabel) {
+                    $seatStmt->execute([$show_id, $seatLabel, $booking_id]);
+                }
+
                 $stmt = $pdo->prepare("UPDATE shows SET available_seats = available_seats - ? WHERE id = ?");
-                $stmt->execute([$seats, $show_id]);
+                $stmt->execute([$seatCount, $show_id]);
 
                 $pdo->commit();
-                showAlert("Booking successful! Total amount: ₹" . number_format($total_amount, 2), 'success');
+                showAlert("Booking successful! Seats " . e(implode(', ', $requested)) . " — Total: ₹" . number_format($total_amount, 2), 'success');
             } catch (Exception $e) {
                 $pdo->rollBack();
-                showAlert('Booking failed. Please try again.', 'error');
+                if ($e->getCode() == 23000 || $e->getMessage() === 'not_enough_seats') {
+                    showAlert('Sorry, one or more of those seats were just booked by someone else. Please pick again.', 'error');
+                } else {
+                    error_log('Booking failed: ' . $e->getMessage());
+                    showAlert('Booking failed. Please try again.', 'error');
+                }
             }
-        } else {
-            showAlert('Not enough seats available!', 'error');
         }
     }
 }
@@ -63,6 +97,15 @@ if ($movie_id) {
         ");
         $stmt->execute([$movie_id]);
         $shows = $stmt->fetchAll();
+
+        // Pre-compute each show's seat grid and which seats are already
+        // taken, so the seat-selection modal can be rendered right away.
+        $seatMaps = [];
+        $bookedSeatsByShow = [];
+        foreach ($shows as $s) {
+            $seatMaps[$s['id']] = buildSeatMap($s['total_seats']);
+            $bookedSeatsByShow[$s['id']] = getBookedSeats($pdo, $s['id']);
+        }
     }
 } else {
     $stmt = $pdo->query("SELECT * FROM movies WHERE status = 'active' ORDER BY title");
@@ -862,6 +905,228 @@ if ($movie_id) {
                 transform: rotate(360deg);
             }
         }
+
+        /* SEAT SELECTION MODAL */
+        .seat-modal-overlay {
+            display: none;
+            position: fixed;
+            inset: 0;
+            background: rgba(0, 0, 0, 0.8);
+            backdrop-filter: blur(6px);
+            z-index: 10000;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+        }
+
+        .seat-modal-overlay.active {
+            display: flex;
+            overflow-y: auto;
+            align-items: flex-start;
+            justify-content: center;
+            padding-top: 30px;
+            padding-bottom: 30px;
+        }
+
+        .seat-modal {
+            display: flex;
+            flex-direction: column;
+            background: linear-gradient(160deg, #1a1a1a 0%, #241a14 100%);
+            border: 1px solid rgba(255, 107, 53, 0.3);
+            border-radius: 20px;
+            padding: 35px;
+            width: min(740px, calc(100% - 40px));
+            max-width: 740px;
+            max-height: calc(100vh - 80px);
+            overflow: hidden;
+            position: relative;
+            box-shadow: 0 25px 70px rgba(0, 0, 0, 0.6);
+            box-sizing: border-box;
+        }
+
+        .seat-modal-body {
+            display: flex;
+            flex-direction: column;
+            overflow-y: auto;
+            max-height: calc(100vh - 220px);
+            width: 100%;
+        }
+
+        .seat-modal-close {
+            position: absolute;
+            top: 18px;
+            right: 18px;
+            background: rgba(255, 255, 255, 0.08);
+            border: none;
+            color: #fff;
+            width: 36px;
+            height: 36px;
+            border-radius: 50%;
+            cursor: pointer;
+            font-size: 1rem;
+            transition: background 0.2s ease;
+            z-index: 2;
+        }
+
+        .seat-modal-close:hover {
+            background: rgba(255, 107, 53, 0.5);
+        }
+
+        .seat-modal-title {
+            color: #ff6b35;
+            font-size: 1.5rem;
+            margin-bottom: 4px;
+            padding-right: 40px;
+        }
+
+        .seat-modal-subtitle {
+            color: rgba(255, 255, 255, 0.6);
+            font-size: 0.9rem;
+            margin-bottom: 25px;
+        }
+
+        .screen-wrap {
+            text-align: center;
+            margin-bottom: 30px;
+        }
+
+        .screen-curve {
+            height: 8px;
+            width: 80%;
+            margin: 0 auto 8px;
+            background: linear-gradient(90deg, transparent, #ff6b35, transparent);
+            border-radius: 50%;
+            box-shadow: 0 0 20px rgba(255, 107, 53, 0.6);
+        }
+
+        .screen-label {
+            font-size: 0.7rem;
+            letter-spacing: 3px;
+            color: rgba(255, 255, 255, 0.4);
+        }
+
+        .seat-grid {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            margin-bottom: 20px;
+            width: 100%;
+            max-height: calc(100vh - 320px);
+            overflow-y: auto;
+            padding-right: 4px;
+        }
+
+        .seat-row {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            flex-wrap: wrap;
+        }
+
+        .row-label {
+            min-width: 24px;
+            flex-shrink: 0;
+            text-align: center;
+            color: rgba(255, 255, 255, 0.5);
+            font-size: 0.8rem;
+            font-weight: 700;
+        }
+
+        .seat-row-seats {
+            display: flex;
+            gap: 6px;
+            flex-wrap: wrap;
+            justify-content: flex-start;
+            width: calc(100% - 24px);
+        }
+
+        .seat {
+            width: 28px;
+            height: 28px;
+            flex-shrink: 0;
+            border-radius: 6px 6px 3px 3px;
+            border: none;
+            font-size: 0.65rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: transform 0.15s ease, box-shadow 0.15s ease;
+        }
+
+        .seat-available {
+            background: rgba(255, 255, 255, 0.12);
+            color: rgba(255, 255, 255, 0.7);
+        }
+
+        .seat-available:hover {
+            background: rgba(255, 107, 53, 0.4);
+            transform: translateY(-2px);
+        }
+
+        .seat-selected {
+            background: linear-gradient(135deg, #27ae60, #2ecc71);
+            color: #fff;
+            box-shadow: 0 4px 12px rgba(39, 174, 96, 0.5);
+            transform: translateY(-2px);
+        }
+
+        .seat-booked {
+            background: rgba(255, 255, 255, 0.04);
+            color: rgba(255, 255, 255, 0.15);
+            cursor: not-allowed;
+        }
+
+        .seat-legend {
+            display: flex;
+            gap: 20px;
+            justify-content: center;
+            margin-bottom: 25px;
+            flex-wrap: wrap;
+        }
+
+        .legend-item {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 0.8rem;
+            color: rgba(255, 255, 255, 0.7);
+        }
+
+        .seat-swatch {
+            width: 16px;
+            height: 16px;
+            border-radius: 4px;
+            display: inline-block;
+        }
+
+        .seat-modal-footer {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 15px;
+            flex-wrap: wrap;
+            border-top: 1px solid rgba(255, 255, 255, 0.1);
+            padding-top: 20px;
+        }
+
+        .seat-summary {
+            color: #fff;
+            font-size: 1rem;
+        }
+
+        .seat-summary strong {
+            color: #ff6b35;
+        }
+
+        @media (max-width: 600px) {
+            .seat-modal {
+                padding: 25px 18px;
+            }
+
+            .seat {
+                width: 24px;
+                height: 24px;
+            }
+        }
     </style>
 </head>
 
@@ -942,6 +1207,68 @@ if ($movie_id) {
             <!-- SHOWS SECTION -->
             <div class="section">
                 <h2 class="section-title">🎟️ AVAILABLE SHOWS</h2>
+                <script>
+                    // Populated per-show below as each seat map renders.
+                    const SEAT_PRICES = {};
+                    const SEAT_LIMITS = {};
+                    const selectedSeatsByShow = {};
+
+                    function openSeatModal(showId) {
+                        const modal = document.getElementById('seatModal-' + showId);
+                        if (modal) {
+                            modal.classList.add('active');
+                            document.body.style.overflow = 'hidden';
+                        }
+                    }
+
+                    function closeSeatModal(showId) {
+                        const modal = document.getElementById('seatModal-' + showId);
+                        if (modal) {
+                            modal.classList.remove('active');
+                            document.body.style.overflow = '';
+                        }
+                    }
+
+                    function toggleSeat(showId, btn) {
+                        if (btn.disabled) return;
+
+                        if (!selectedSeatsByShow[showId]) selectedSeatsByShow[showId] = new Set();
+                        const selected = selectedSeatsByShow[showId];
+                        const seat = btn.dataset.seat;
+                        const limit = SEAT_LIMITS[showId] || 10;
+
+                        if (selected.has(seat)) {
+                            selected.delete(seat);
+                            btn.classList.remove('seat-selected');
+                            btn.classList.add('seat-available');
+                        } else {
+                            if (selected.size >= limit) {
+                                alert('You can select up to ' + limit + ' seats for this show.');
+                                return;
+                            }
+                            selected.add(seat);
+                            btn.classList.remove('seat-available');
+                            btn.classList.add('seat-selected');
+                        }
+                        updateSeatSummary(showId);
+                    }
+
+                    function updateSeatSummary(showId) {
+                        const selected = selectedSeatsByShow[showId] || new Set();
+                        const count = selected.size;
+                        const total = count * (SEAT_PRICES[showId] || 0);
+
+                        const countEl = document.getElementById('seatCount-' + showId);
+                        const totalEl = document.getElementById('seatTotal-' + showId);
+                        const hiddenEl = document.getElementById('selectedSeats-' + showId);
+                        const btnEl = document.getElementById('confirmBtn-' + showId);
+
+                        if (countEl) countEl.textContent = count;
+                        if (totalEl) totalEl.textContent = total.toFixed(2);
+                        if (hiddenEl) hiddenEl.value = Array.from(selected).join(',');
+                        if (btnEl) btnEl.disabled = count === 0;
+                    }
+                </script>
                 <?php if (empty($shows)): ?>
                     <div style="text-align: center; padding: 60px; color: rgba(255,255,255,0.7);">
                         <div style="font-size: 4rem; margin-bottom: 20px;">🎭</div>
@@ -977,17 +1304,80 @@ if ($movie_id) {
 
                                 <?php if ($show['available_seats'] > 0): ?>
                                     <div class="booking-section">
-                                        <form method="POST" class="booking-form">
-                                            <input type="hidden" name="action" value="book_ticket">
-                                            <input type="hidden" name="show_id" value="<?= $show['id'] ?>">
-                                            <div class="form-group">
-                                                <label class="form-label">Seats</label>
-                                                <input type="number" name="seats" min="1" max="<?= min(10, $show['available_seats']) ?>"
-                                                    value="1" class="form-control">
-                                            </div>
-                                            <button type="submit" class="btn btn-success">🎫 Book Now</button>
-                                        </form>
+                                        <button type="button" class="btn btn-success" onclick="openSeatModal(<?= $show['id'] ?>)">
+                                            🎫 Select Seats
+                                        </button>
                                     </div>
+
+                                    <!-- Seat selection modal for this show -->
+                                    <div id="seatModal-<?= $show['id'] ?>" class="seat-modal-overlay" onclick="if(event.target===this) closeSeatModal(<?= $show['id'] ?>)">
+                                        <div class="seat-modal">
+                                            <button type="button" class="seat-modal-close" onclick="closeSeatModal(<?= $show['id'] ?>)" aria-label="Close">
+                                                <i class="fas fa-times"></i>
+                                            </button>
+
+                                            <div class="seat-modal-body">
+                                                <h3 class="seat-modal-title"><?= e($movie['title']) ?></h3>
+                                                <p class="seat-modal-subtitle">
+                                                    <?= e($show['theater_name']) ?> &middot;
+                                                    <?= date('M d, Y', strtotime($show['show_date'])) ?> &middot;
+                                                    <?= date('h:i A', strtotime($show['show_time'])) ?>
+                                                </p>
+
+                                                <div class="screen-wrap">
+                                                    <div class="screen-curve"></div>
+                                                    <div class="screen-label">SCREEN THIS SIDE</div>
+                                                </div>
+
+                                                <div class="seat-grid">
+                                                    <?php foreach ($seatMaps[$show['id']] as $row): ?>
+                                                        <div class="seat-row">
+                                                            <div class="row-label"><?= e($row['label']) ?></div>
+                                                            <div class="seat-row-seats">
+                                                                <?php foreach ($row['seats'] as $seatLabel): ?>
+                                                                    <?php $isBooked = in_array($seatLabel, $bookedSeatsByShow[$show['id']], true); ?>
+                                                                    <button type="button"
+                                                                        class="seat <?= $isBooked ? 'seat-booked' : 'seat-available' ?>"
+                                                                        data-seat="<?= e($seatLabel) ?>"
+                                                                        title="Seat <?= e($seatLabel) ?><?= $isBooked ? ' (already booked)' : '' ?>"
+                                                                        <?= $isBooked ? 'disabled' : '' ?>
+                                                                        onclick="toggleSeat(<?= $show['id'] ?>, this)">
+                                                                        <?= e(substr($seatLabel, strlen($row['label']))) ?>
+                                                                    </button>
+                                                                <?php endforeach; ?>
+                                                            </div>
+                                                        </div>
+                                                    <?php endforeach; ?>
+                                                </div>
+
+                                                <div class="seat-legend">
+                                                    <div class="legend-item"><span class="seat-swatch seat-available"></span> Available</div>
+                                                    <div class="legend-item"><span class="seat-swatch seat-selected"></span> Selected</div>
+                                                    <div class="legend-item"><span class="seat-swatch seat-booked"></span> Booked</div>
+                                                </div>
+
+                                                <form method="POST" class="seat-booking-form">
+                                                    <input type="hidden" name="action" value="book_ticket">
+                                                    <input type="hidden" name="show_id" value="<?= $show['id'] ?>">
+                                                    <input type="hidden" name="selected_seats" id="selectedSeats-<?= $show['id'] ?>" value="">
+                                                    <?= csrf_field() ?>
+                                                <div class="seat-modal-footer">
+                                                    <div class="seat-summary">
+                                                        <span id="seatCount-<?= $show['id'] ?>">0</span> seat(s) selected
+                                                        &mdash; <strong>₹<span id="seatTotal-<?= $show['id'] ?>">0.00</span></strong>
+                                                    </div>
+                                                    <button type="submit" class="btn btn-success" id="confirmBtn-<?= $show['id'] ?>" disabled>
+                                                        Confirm Booking
+                                                    </button>
+                                                </div>
+                                            </form>
+                                        </div>
+                                    </div>
+
+                                    <script>
+                                        SEAT_PRICES[<?= $show['id'] ?>] = <?= (float) $show['price'] ?>;
+                                        SEAT_LIMITS[<?= $show['id'] ?>] = <?= (int) min(MAX_SEATS_PER_BOOKING, $show['available_seats']) ?>;
+                                    </script>
                                 <?php else: ?>
                                     <div class="booking-section">
                                         <button class="btn btn-secondary" disabled>❌ Sold Out</button>

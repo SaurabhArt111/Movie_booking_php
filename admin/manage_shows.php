@@ -1,13 +1,6 @@
 <?php
 require_once '../config.php';
-if (session_status() === PHP_SESSION_NONE)
-    session_start();
-
-// Check admin login
-if (!isset($_SESSION['admin_id'])) {
-    header("Location: login.php");
-    exit;
-}
+requireAdmin($pdo);
 
 // Fetch shows
 $stmt = $pdo->query("
@@ -300,6 +293,11 @@ $shows = $stmt->fetchAll();
             border: 2px solid transparent;
         }
 
+        button.action-link {
+            font-family: inherit;
+            cursor: pointer;
+        }
+
         .edit-link {
             background: linear-gradient(135deg, #17a2b8, #138496);
             color: white;
@@ -447,11 +445,13 @@ $shows = $stmt->fetchAll();
                                             <i class="fas fa-edit"></i>
                                             Edit
                                         </a>
-                                        <a href="delete_show.php?id=<?= $show['id'] ?>" class="action-link delete-link"
-                                            onclick="return confirmDelete('<?= htmlspecialchars($show['movie_title']) ?>');">
+                                        <button type="button" class="action-link delete-link"
+                                            data-show-id="<?= (int) $show['id'] ?>"
+                                            data-movie-title="<?= e($show['movie_title']) ?>"
+                                            onclick="confirmDelete(this)">
                                             <i class="fas fa-trash"></i>
                                             Delete
-                                        </a>
+                                        </button>
                                     </div>
                                 </td>
                             </tr>
@@ -464,8 +464,13 @@ $shows = $stmt->fetchAll();
 
     <script>
         // Enhanced delete confirmation
-        function confirmDelete(movieTitle) {
-            return confirm(`Are you sure you want to delete the show for "${movieTitle}"?\n\nThis action cannot be undone.`);
+        function confirmDelete(btn) {
+            const movieTitle = btn.dataset.movieTitle;
+            const showId = btn.dataset.showId;
+            if (confirm(`Are you sure you want to delete the show for "${movieTitle}"?\n\nThis action cannot be undone.`)) {
+                document.getElementById('deleteShowId').value = showId;
+                document.getElementById('deleteShowForm').submit();
+            }
         }
 
         // Add loading animation to buttons when clicked
@@ -516,6 +521,10 @@ $shows = $stmt->fetchAll();
             }
         });
     </script>
+    <form method="POST" action="delete_show.php" id="deleteShowForm" style="display:none;">
+        <input type="hidden" name="id" id="deleteShowId">
+        <?= csrf_field() ?>
+    </form>
 </body>
 
 </html>

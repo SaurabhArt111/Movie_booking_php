@@ -1,5 +1,5 @@
 <?php
 require_once __DIR__ . '/../config.php';
-session_destroy();
-redirect('../index.php');
-?>
+
+unset($_SESSION['admin_id'], $_SESSION['admin_name']);
+redirect('login.php');

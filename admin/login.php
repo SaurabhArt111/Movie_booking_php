@@ -1,25 +1,47 @@
 <?php
 require_once '../config.php';
 
-if (session_status() === PHP_SESSION_NONE) {
-    session_start();
+// Already signed in as admin? Skip straight to the dashboard.
+if (!empty($_SESSION['admin_id'])) {
+    header("Location: dashboard.php");
+    exit;
 }
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    $email = sanitize($_POST['email']);
-    $password = $_POST['password'];
+    csrf_verify();
 
-    $stmt = $pdo->prepare("SELECT * FROM users WHERE email = ? AND role = 'admin'");
-    $stmt->execute([$email]);
-    $admin = $stmt->fetch();
+    $email = sanitize($_POST['email'] ?? '');
+    $password = $_POST['password'] ?? '';
+    $identifier = loginIdentifier($email);
 
-    if ($admin && password_verify($password, $admin['password'])) {
-        $_SESSION['admin_id'] = $admin['id'];
-        $_SESSION['admin_name'] = $admin['full_name'];
-        header("Location: dashboard.php");
-        exit;
+    if (loginIsThrottled($pdo, $identifier)) {
+        $error = "Too many failed attempts. Please wait " . LOGIN_LOCKOUT_MINUTES . " minutes and try again.";
     } else {
-        $error = "Invalid login details!";
+        // role = 'admin' is checked here AND re-checked on every admin page
+        // via requireAdmin(), so a demoted account loses access immediately.
+        $stmt = $pdo->prepare("SELECT * FROM users WHERE email = ? AND role = 'admin'");
+        $stmt->execute([$email]);
+        $admin = $stmt->fetch();
+
+        if ($admin && password_verify($password, $admin['password'])) {
+            recordLoginAttempt($pdo, $identifier, true);
+
+            if (password_needs_rehash($admin['password'], PASSWORD_DEFAULT)) {
+                $newHash = password_hash($password, PASSWORD_DEFAULT);
+                $pdo->prepare("UPDATE users SET password = ? WHERE id = ?")->execute([$newHash, $admin['id']]);
+            }
+
+            session_regenerate_id(true);
+            unset($_SESSION['csrf_token']);
+
+            $_SESSION['admin_id'] = $admin['id'];
+            $_SESSION['admin_name'] = $admin['full_name'];
+            header("Location: dashboard.php");
+            exit;
+        } else {
+            recordLoginAttempt($pdo, $identifier, false);
+            $error = "Invalid login details!";
+        }
     }
 }
 ?>
@@ -515,6 +537,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         <?php endif; ?>
 
         <form method="post" class="login-form" id="loginForm">
+            <?= csrf_field() ?>
             <div class="form-group">
                 <label for="email">📧 Email Address</label>
                 <div class="input-wrapper">

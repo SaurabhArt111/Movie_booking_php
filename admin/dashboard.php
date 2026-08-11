@@ -1,19 +1,6 @@
 <?php
 require_once '../config.php';
-
-if (session_status() === PHP_SESSION_NONE)
-    session_start();
-
-// Check if admin is logged in 
-if (!isset($_SESSION['admin_id'])) {
-    header("Location: login.php");
-    exit;
-}
-
-// Fetch admin info 
-$stmt = $pdo->prepare("SELECT username, full_name FROM users WHERE id = ?");
-$stmt->execute([$_SESSION['admin_id']]);
-$admin = $stmt->fetch();
+$admin = requireAdmin($pdo);
 
 // Fetch recent movies for display
 $moviesStmt = $pdo->prepare("SELECT * FROM movies ORDER BY created_at DESC LIMIT 8");

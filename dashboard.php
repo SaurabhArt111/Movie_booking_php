@@ -7,7 +7,9 @@ if (!isLoggedIn()) {
 
 // Get user's booking history
 $stmt = $pdo->prepare("
-    SELECT b.*, m.title, t.name as theater_name, s.show_date, s.show_time 
+    SELECT b.*, m.title, t.name as theater_name, s.show_date, s.show_time,
+           (SELECT GROUP_CONCAT(seat_label ORDER BY seat_label SEPARATOR ', ')
+              FROM booked_seats WHERE booking_id = b.id) AS seat_labels
     FROM bookings b 
     JOIN shows s ON b.show_id = s.id 
     JOIN movies m ON s.movie_id = m.id 
@@ -742,6 +744,44 @@ $movies = $stmt->fetchAll();
                 padding: 20px;
             }
         }
+        /* Flash alerts */
+        .alert {
+            padding: 18px 24px;
+            margin-bottom: 25px;
+            border-radius: 15px;
+            font-weight: 600;
+            border: 1px solid;
+            animation: alertSlideIn 0.4s ease-out;
+        }
+
+        @keyframes alertSlideIn {
+            from {
+                opacity: 0;
+                transform: translateY(-10px);
+            }
+
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        .alert-success {
+            background: linear-gradient(135deg, #27ae60, #2ecc71);
+            border-color: rgba(39, 174, 96, 0.3);
+            color: #fff;
+        }
+
+        .alert-error {
+            background: linear-gradient(135deg, #e50914, #ff6b6b);
+            border-color: rgba(229, 9, 20, 0.3);
+            color: #fff;
+        }
+
+        button.btn {
+            font-family: inherit;
+            font-size: inherit;
+        }
     </style>
 </head>
 
@@ -778,6 +818,7 @@ $movies = $stmt->fetchAll();
     </div>
 
     <div class="container">
+        <?php displayAlert(); ?>
         <div class="welcome-section scroll-reveal">
             <h1>Hello, <?= htmlspecialchars($_SESSION['full_name']) ?>!</h1>
             <p>Book your favorite movies and manage your tickets all in one place.</p>
@@ -871,7 +912,14 @@ $movies = $stmt->fetchAll();
                                     <td><?= htmlspecialchars($b['theater_name']) ?></td>
                                     <td><?= date("M d, Y", strtotime($b['show_date'])) . " | " . date("h:i A", strtotime($b['show_time'])) ?>
                                     </td>
-                                    <td><?= htmlspecialchars($b['seats_booked']) ?></td>
+                                    <td>
+                                        <?= htmlspecialchars($b['seats_booked']) ?>
+                                        <?php if (!empty($b['seat_labels'])): ?>
+                                            <div style="font-size: 0.8rem; color: #aaa; margin-top: 4px;">
+                                                <?= htmlspecialchars($b['seat_labels']) ?>
+                                            </div>
+                                        <?php endif; ?>
+                                    </td>
                                     <td>₹<?= number_format($b['total_amount'], 2) ?></td>
                                     <td>
                                         <?php if ($b['booking_status'] === 'confirmed'): ?>
@@ -885,10 +933,14 @@ $movies = $stmt->fetchAll();
                                             $b['booking_status'] === 'confirmed' &&
                                             strtotime($b['show_date'] . ' ' . $b['show_time']) > time()
                                         ): ?>
-                                            <a href="cancel_booking.php?id=<?= $b['id'] ?>" class="btn btn-danger"
-                                                onclick="return confirm('Are you sure you want to cancel this booking?');">
-                                                <i class="fas fa-times"></i> Cancel
-                                            </a>
+                                            <form method="POST" action="cancel_booking.php" style="display:inline;"
+                                                onsubmit="return confirm('Are you sure you want to cancel this booking?');">
+                                                <input type="hidden" name="id" value="<?= (int) $b['id'] ?>">
+                                                <?= csrf_field() ?>
+                                                <button type="submit" class="btn btn-danger">
+                                                    <i class="fas fa-times"></i> Cancel
+                                                </button>
+                                            </form>
                                         <?php else: ?>
                                             <span style="color:#888;">N/A</span>
                                         <?php endif; ?>

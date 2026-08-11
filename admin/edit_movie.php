@@ -1,13 +1,6 @@
 <?php
 require_once '../config.php';
-
-if (session_status() === PHP_SESSION_NONE)
-    session_start();
-
-if (!isset($_SESSION['admin_id'])) {
-    header("Location: login.php");
-    exit;
-}
+requireAdmin($pdo);
 
 if (!isset($_GET['id'])) {
     header("Location: manage_movies.php");
@@ -28,31 +21,36 @@ if (!$movie) {
 
 // Update movie
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    csrf_verify();
+
     $title = sanitize($_POST['title']);
     $genre = sanitize($_POST['genre']);
     $duration = intval($_POST['duration']);
     $rating = floatval($_POST['rating']);
     $description = sanitize($_POST['description']);
     $posterPath = $movie['poster_url'];
+    $error = null;
 
     if (!empty($_FILES['poster']['name'])) {
-        $uploadDir = "../uploads/movies/";
-        if (!is_dir($uploadDir))
-            mkdir($uploadDir, 0777, true);
-        $filename = time() . "_" . basename($_FILES['poster']['name']);
-        $target = $uploadDir . $filename;
-        if (move_uploaded_file($_FILES['poster']['tmp_name'], $target)) {
-            $posterPath = "uploads/movies/" . $filename;
+        try {
+            $posterPath = handleUploadedPoster($_FILES['poster'], "../uploads/movies/", "uploads/movies/");
+        } catch (RuntimeException $e) {
+            $error = $e->getMessage();
         }
     }
 
-    $stmt = $pdo->prepare("UPDATE movies 
-        SET title=?, genre=?, duration=?, rating=?, description=?, poster_url=? 
-        WHERE id=?");
-    $stmt->execute([$title, $genre, $duration, $rating, $description, $posterPath, $id]);
+    if (!$error) {
+        $stmt = $pdo->prepare("UPDATE movies 
+            SET title=?, genre=?, duration=?, rating=?, description=?, poster_url=? 
+            WHERE id=?");
+        $stmt->execute([$title, $genre, $duration, $rating, $description, $posterPath, $id]);
 
-    header("Location: manage_movies.php");
-    exit;
+        header("Location: manage_movies.php");
+        exit;
+    }
+
+    // Re-fetch so the form reflects what's actually in the DB after a failed upload.
+    $movie = array_merge($movie, compact('title', 'genre', 'duration', 'rating', 'description'));
 }
 
 ?>
@@ -516,6 +514,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 font-size: 2rem;
             }
         }
+        .error-message {
+            background: linear-gradient(45deg, #e74c3c, #c0392b);
+            color: white;
+            padding: 1rem 1.5rem;
+            border-radius: 12px;
+            margin-bottom: 1.5rem;
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+        }
     </style>
 </head>
 
@@ -541,7 +549,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         </div>
 
         <div class="form-card">
+            <?php if (!empty($error)): ?>
+                <div class="error-message">
+                    <i class="fas fa-exclamation-circle"></i>
+                    <?= e($error) ?>
+                </div>
+            <?php endif; ?>
             <form method="post" enctype="multipart/form-data" id="movieForm">
+                <?= csrf_field() ?>
                 <div class="form-group">
                     <label for="title">
                         <i class="fas fa-video"></i>

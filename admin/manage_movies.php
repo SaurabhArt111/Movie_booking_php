@@ -1,16 +1,11 @@
 <?php
 require_once '../config.php';
-if (session_status() === PHP_SESSION_NONE) {
-    session_start();
-}
-
-if (!isset($_SESSION['admin_id'])) {
-    header("Location: login.php");
-    exit;
-}
+$admin = requireAdmin($pdo);
 
 // Add movie
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    csrf_verify();
+
     $title = sanitize($_POST['title']);
     $genre = sanitize($_POST['genre']);
     $duration = intval($_POST['duration']);
@@ -19,32 +14,26 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $posterPath = null;
 
     if (!empty($_FILES['poster']['name'])) {
-        $uploadDir = "../uploads/movies/";
-        if (!is_dir($uploadDir))
-            mkdir($uploadDir, 0777, true);
-
-        $filename = time() . "_" . basename($_FILES['poster']['name']);
-        $target = $uploadDir . $filename;
-
-        if (move_uploaded_file($_FILES['poster']['tmp_name'], $target)) {
-            $posterPath = "uploads/movies/" . $filename;
+        try {
+            $posterPath = handleUploadedPoster($_FILES['poster'], "../uploads/movies/", "uploads/movies/");
+        } catch (RuntimeException $e) {
+            $success = null;
+            $error = $e->getMessage();
         }
     }
-    $stmt = $pdo->prepare("INSERT INTO movies (title, genre, duration, rating, description, poster_url, status) 
-                       VALUES (?, ?, ?, ?, ?, ?, 'active')");
-    $stmt->execute([$title, $genre, $duration, $rating, $description, $posterPath]);
 
-    $success = "✅ Movie added successfully!";
+    if (empty($error)) {
+        $stmt = $pdo->prepare("INSERT INTO movies (title, genre, duration, rating, description, poster_url, status) 
+                       VALUES (?, ?, ?, ?, ?, ?, 'active')");
+        $stmt->execute([$title, $genre, $duration, $rating, $description, $posterPath]);
+
+        $success = "✅ Movie added successfully!";
+    }
 }
 
 // Fetch movies
 $stmt = $pdo->query("SELECT * FROM movies ORDER BY created_at DESC");
 $movies = $stmt->fetchAll();
-
-// Get admin info
-$adminStmt = $pdo->prepare("SELECT username, full_name FROM users WHERE id = ?");
-$adminStmt->execute([$_SESSION['admin_id']]);
-$admin = $adminStmt->fetch();
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -181,6 +170,20 @@ $admin = $adminStmt->fetch();
             border-radius: 15px;
             margin-bottom: 2rem;
             box-shadow: 0 10px 30px rgba(0, 208, 132, 0.3);
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+            animation: slideInDown 0.5s ease;
+        }
+
+        /* Error Message */
+        .error {
+            background: linear-gradient(45deg, #e74c3c, #c0392b);
+            color: white;
+            padding: 1rem 2rem;
+            border-radius: 15px;
+            margin-bottom: 2rem;
+            box-shadow: 0 10px 30px rgba(231, 76, 60, 0.3);
             display: flex;
             align-items: center;
             gap: 1rem;
@@ -735,11 +738,17 @@ $admin = $adminStmt->fetch();
             <p>Add, edit, and organize your movie collection</p>
         </div>
 
-        <!-- Success Message -->
+        <!-- Success / Error Messages -->
         <?php if (!empty($success)): ?>
             <div class="success">
                 <i class="fas fa-check-circle"></i>
                 <?= $success ?>
+            </div>
+        <?php endif; ?>
+        <?php if (!empty($error)): ?>
+            <div class="error">
+                <i class="fas fa-exclamation-circle"></i>
+                <?= e($error) ?>
             </div>
         <?php endif; ?>
 
@@ -747,6 +756,7 @@ $admin = $adminStmt->fetch();
         <div class="form-section">
             <h2><i class="fas fa-plus-circle"></i> Add New Movie</h2>
             <form method="post" enctype="multipart/form-data" id="movieForm">
+                <?= csrf_field() ?>
                 <div class="form-grid">
                     <div class="form-left">
                         <div class="input-group">
@@ -869,8 +879,10 @@ $admin = $adminStmt->fetch();
                                         <i class="fas fa-edit"></i>
                                         Edit
                                     </a>
-                                    <button
-                                        onclick="deleteMovie(<?= $movie['id'] ?>, '<?= htmlspecialchars($movie['title']) ?>')"
+                                    <button type="button"
+                                        data-movie-id="<?= (int) $movie['id'] ?>"
+                                        data-movie-title="<?= e($movie['title']) ?>"
+                                        onclick="deleteMovie(this)"
                                         class="action-btn delete-btn">
                                         <i class="fas fa-trash"></i>
                                         Delete
@@ -971,13 +983,13 @@ $admin = $adminStmt->fetch();
         });
 
         // Delete movie function
-        function deleteMovie(movieId, movieTitle) {
+        function deleteMovie(btn) {
+            const movieId = btn.dataset.movieId;
+            const movieTitle = btn.dataset.movieTitle;
             if (confirm(`Are you sure you want to delete "${movieTitle}"? This action cannot be undone.`)) {
-                // Show loading
                 document.getElementById('loading').style.display = 'flex';
-
-                // Redirect to delete script
-                window.location.href = `delete_movie.php?id=${movieId}`;
+                document.getElementById('deleteMovieId').value = movieId;
+                document.getElementById('deleteMovieForm').submit();
             }
         }
 
@@ -1219,6 +1231,10 @@ $admin = $adminStmt->fetch();
             }, 1500);
         <?php endif; ?>
     </script>
+    <form method="POST" action="delete_movie.php" id="deleteMovieForm" style="display:none;">
+        <input type="hidden" name="id" id="deleteMovieId">
+        <?= csrf_field() ?>
+    </form>
 </body>
 
 </html>

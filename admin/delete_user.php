@@ -1,16 +1,17 @@
 <?php
 require_once '../config.php';
-if (session_status() === PHP_SESSION_NONE) session_start();
+requireAdmin($pdo);
 
-if (!isset($_SESSION['admin_id'])) {
-    header("Location: login.php");
+if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+    header("Location: manage_users.php");
     exit;
 }
+csrf_verify();
 
-if (isset($_GET['id'])) {
-    $id = intval($_GET['id']);
+if (isset($_POST['id'])) {
+    $id = intval($_POST['id']);
 
-    // Prevent deleting self
+    // Prevent an admin from deleting their own account mid-session
     if ($id != $_SESSION['admin_id']) {
         $stmt = $pdo->prepare("DELETE FROM users WHERE id = ?");
         $stmt->execute([$id]);

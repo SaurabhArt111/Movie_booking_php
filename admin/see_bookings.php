@@ -1,13 +1,6 @@
 <?php
 require_once '../config.php';
-
-if (session_status() === PHP_SESSION_NONE)
-    session_start();
-
-if (!isset($_SESSION['admin_id'])) {
-    header("Location: login.php");
-    exit;
-}
+requireAdmin($pdo);
 
 /* Fetch bookings with correct real DB columns */
 $stmt = $pdo->prepare("
@@ -26,7 +19,10 @@ $stmt = $pdo->prepare("
 
         CONCAT(s.show_date, ' ', s.show_time) AS show_datetime,
 
-        -- ✅ compute watched status
+        (SELECT GROUP_CONCAT(seat_label ORDER BY seat_label SEPARATOR ', ')
+           FROM booked_seats WHERE booking_id = b.id) AS seat_labels,
+
+        -- computed watched status
         CASE
             WHEN CONCAT(s.show_date, ' ', s.show_time) < NOW()
                  AND b.booking_status = 'confirmed'
@@ -42,7 +38,6 @@ $stmt = $pdo->prepare("
 
     ORDER BY b.booking_date DESC
 ");
-
 
 $stmt->execute();
 $bookings = $stmt->fetchAll(PDO::FETCH_ASSOC);
@@ -411,6 +406,11 @@ $bookings = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
                             <td>
                                 <span class="badge"><?= $b['seats_booked'] ?></span>
+                                <?php if (!empty($b['seat_labels'])): ?>
+                                    <div style="font-size: 0.75rem; opacity: 0.7; margin-top: 4px;">
+                                        <?= htmlspecialchars($b['seat_labels']) ?>
+                                    </div>
+                                <?php endif; ?>
                             </td>
 
                             <td class="price">

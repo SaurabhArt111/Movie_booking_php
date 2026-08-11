@@ -5,15 +5,21 @@ if (!isLoggedIn()) {
     redirect('index.php');
 }
 
-// Get booking ID from URL
-$booking_id = isset($_GET['id']) ? intval($_GET['id']) : null;
+// Cancelling changes data, so it only ever happens via POST with a valid
+// CSRF token — a GET link could otherwise be triggered from another site.
+if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+    redirect('dashboard.php');
+}
+csrf_verify();
+
+$booking_id = isset($_POST['id']) ? (int) $_POST['id'] : null;
 
 if (!$booking_id) {
     flash('No booking selected.', 'error');
     redirect('dashboard.php');
 }
 
-// Fetch booking details
+// Fetch booking details — the user_id check keeps this to the owner's own bookings.
 $stmt = $pdo->prepare("
     SELECT b.*, s.show_date, s.show_time, s.id AS show_id
     FROM bookings b
@@ -44,6 +50,10 @@ try {
     $updateBooking = $pdo->prepare("UPDATE bookings SET booking_status = 'cancelled' WHERE id = ?");
     $updateBooking->execute([$booking_id]);
 
+    // Free up this booking's specific seats so they reappear on the seat map.
+    $deleteSeats = $pdo->prepare("DELETE FROM booked_seats WHERE booking_id = ?");
+    $deleteSeats->execute([$booking_id]);
+
     // Free up seats in shows table
     $updateSeats = $pdo->prepare("UPDATE shows SET available_seats = available_seats + ? WHERE id = ?");
     $updateSeats->execute([$booking['seats_booked'], $booking['show_id']]);
@@ -52,7 +62,8 @@ try {
     flash('Booking cancelled successfully.', 'success');
 } catch (Exception $e) {
     $pdo->rollBack();
-    flash('Cancellation failed: ' . $e->getMessage(), 'error');
+    error_log('Cancellation failed: ' . $e->getMessage());
+    flash('Cancellation failed. Please try again.', 'error');
 }
 
 redirect('dashboard.php');

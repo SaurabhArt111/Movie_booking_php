@@ -1,12 +1,7 @@
 <?php
 require_once '../config.php';
-if (session_status() === PHP_SESSION_NONE)
-    session_start();
-// Check admin login
-if (!isset($_SESSION['admin_id'])) {
-    header("Location: login.php");
-    exit;
-}
+requireAdmin($pdo);
+
 // Fetch all users
 $stmt = $pdo->query("SELECT id, username, email, full_name, role, created_at FROM users ORDER BY id DESC");
 $users = $stmt->fetchAll();
@@ -487,11 +482,13 @@ $users = $stmt->fetchAll();
                                         <i class="fas fa-edit"></i>
                                         Edit
                                     </a>
-                                    <a href="delete_user.php?id=<?= $user['id'] ?>" class="btn btn-delete"
-                                        onclick="return confirmDelete('<?= htmlspecialchars($user['username']) ?>');">
+                                    <button type="button" class="btn btn-delete"
+                                        data-user-id="<?= (int) $user['id'] ?>"
+                                        data-username="<?= e($user['username']) ?>"
+                                        onclick="confirmDelete(this)">
                                         <i class="fas fa-trash"></i>
                                         Delete
-                                    </a>
+                                    </button>
                                 </div>
                             </td>
                         </tr>
@@ -502,8 +499,13 @@ $users = $stmt->fetchAll();
     </div>
 
     <script>
-        function confirmDelete(username) {
-            return confirm(`Are you sure you want to delete user "${username}"?\n\nThis action cannot be undone.`);
+        function confirmDelete(btn) {
+            const username = btn.dataset.username;
+            const userId = btn.dataset.userId;
+            if (confirm(`Are you sure you want to delete user "${username}"?\n\nThis action cannot be undone.`)) {
+                document.getElementById('deleteUserId').value = userId;
+                document.getElementById('deleteUserForm').submit();
+            }
         }
 
         // Add loading animation on button clicks
@@ -547,6 +549,10 @@ $users = $stmt->fetchAll();
             });
         });
     </script>
+    <form method="POST" action="delete_user.php" id="deleteUserForm" style="display:none;">
+        <input type="hidden" name="id" id="deleteUserId">
+        <?= csrf_field() ?>
+    </form>
 </body>
 
 </html>

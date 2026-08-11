@@ -1,12 +1,6 @@
 <?php
 require_once '../config.php';
-if (session_status() === PHP_SESSION_NONE)
-    session_start();
-
-if (!isset($_SESSION['admin_id'])) {
-    header("Location: login.php");
-    exit;
-}
+requireAdmin($pdo);
 
 if (!isset($_GET['id'])) {
     header("Location: manage_shows.php");
@@ -29,7 +23,13 @@ if (!$show) {
 $movies = $pdo->query("SELECT id, title FROM movies ORDER BY title")->fetchAll();
 $theaters = $pdo->query("SELECT id, name FROM theaters ORDER BY name")->fetchAll();
 
+// Values used to pre-fill the form — the DB row by default, or whatever was
+// just submitted if validation failed, so the admin doesn't lose their input.
+$formValues = $show;
+
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    csrf_verify();
+
     $movie_id = intval($_POST['movie_id']);
     $theater_id = intval($_POST['theater_id']);
     $show_date = $_POST['show_date'];
@@ -37,19 +37,37 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $price = floatval($_POST['price']);
     $total_seats = intval($_POST['total_seats']);
 
-    // Adjust available seats if total_seats changed
-    $booked = $show['total_seats'] - $show['available_seats']; // tickets already booked
-    $available_seats = max(0, $total_seats - $booked);
+    $validMovie = in_array($movie_id, array_column($movies, 'id'));
+    $validTheater = in_array($theater_id, array_column($theaters, 'id'));
+    $validDate = (bool) DateTime::createFromFormat('Y-m-d', $show_date);
 
-    $stmt = $pdo->prepare("
-        UPDATE shows
-        SET movie_id=?, theater_id=?, show_date=?, show_time=?, price=?, total_seats=?, available_seats=?
-        WHERE id=?
-    ");
-    $stmt->execute([$movie_id, $theater_id, $show_date, $show_time, $price, $total_seats, $available_seats, $id]);
+    // tickets already booked for this show
+    $booked = $show['total_seats'] - $show['available_seats'];
 
-    header("Location: manage_shows.php");
-    exit;
+    if (!$validMovie || !$validTheater) {
+        $error = 'Please choose a valid movie and theater.';
+    } elseif (!$validDate) {
+        $error = 'Please enter a valid date.';
+    } elseif ($price <= 0) {
+        $error = 'Price must be greater than zero.';
+    } elseif ($total_seats < $booked) {
+        $error = "Total seats can't be less than the $booked seat(s) already booked.";
+    } else {
+        $available_seats = max(0, $total_seats - $booked);
+
+        $stmt = $pdo->prepare("
+            UPDATE shows
+            SET movie_id=?, theater_id=?, show_date=?, show_time=?, price=?, total_seats=?, available_seats=?
+            WHERE id=?
+        ");
+        $stmt->execute([$movie_id, $theater_id, $show_date, $show_time, $price, $total_seats, $available_seats, $id]);
+
+        header("Location: manage_shows.php");
+        exit;
+    }
+
+    // Reflect the attempted values back into the form instead of the stale DB copy.
+    $formValues = compact('movie_id', 'theater_id', 'show_date', 'show_time', 'price', 'total_seats');
 }
 ?>
 <!DOCTYPE html>
@@ -597,7 +615,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 </div>
             </div>
 
+            <?php if (!empty($error)): ?>
+                <div style="background: linear-gradient(45deg, #e74c3c, #c0392b); color: #fff; padding: 1rem 1.5rem; border-radius: 12px; margin-bottom: 1.5rem;">
+                    ⚠️ <?= e($error) ?>
+                </div>
+            <?php endif; ?>
+
             <form method="post" id="showForm">
+                <?= csrf_field() ?>
                 <div class="form-row">
                     <div class="form-group">
                         <label for="movie_id">
@@ -607,7 +632,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         <select name="movie_id" id="movie_id" class="form-control" required>
                             <option value="">Select a movie</option>
                             <?php foreach ($movies as $movie): ?>
-                                <option value="<?= $movie['id'] ?>" <?= $movie['id'] == $show['movie_id'] ? 'selected' : '' ?>>
+                                <option value="<?= $movie['id'] ?>" <?= $movie['id'] == $formValues['movie_id'] ? 'selected' : '' ?>>
                                     <?= htmlspecialchars($movie['title']) ?>
                                 </option>
                             <?php endforeach; ?>
@@ -622,7 +647,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         <select name="theater_id" id="theater_id" class="form-control" required>
                             <option value="">Select a theater</option>
                             <?php foreach ($theaters as $theater): ?>
-                                <option value="<?= $theater['id'] ?>" <?= $theater['id'] == $show['theater_id'] ? 'selected' : '' ?>>
+                                <option value="<?= $theater['id'] ?>" <?= $theater['id'] == $formValues['theater_id'] ? 'selected' : '' ?>>
                                     <?= htmlspecialchars($theater['name']) ?>
                                 </option>
                             <?php endforeach; ?>
@@ -637,7 +662,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                             Show Date
                         </label>
                         <input type="date" id="show_date" name="show_date" class="form-control"
-                            value="<?= $show['show_date'] ?>" required>
+                            value="<?= e($formValues['show_date']) ?>" required>
                     </div>
 
                     <div class="form-group">
@@ -646,7 +671,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                             Show Time
                         </label>
                         <input type="time" id="show_time" name="show_time" class="form-control"
-                            value="<?= $show['show_time'] ?>" required>
+                            value="<?= e($formValues['show_time']) ?>" required>
                     </div>
                 </div>
 
@@ -658,10 +683,22 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         </label>
                         <div class="price-input">
                             <input type="number" step="0.01" id="price" name="price" class="form-control"
-                                value="<?= $show['price'] ?>" placeholder="150.00" min="0" required>
+                                value="<?= e($formValues['price']) ?>" placeholder="150.00" min="0" required>
                         </div>
                     </div>
 
+                    <div class="form-group">
+                        <label for="total_seats">
+                            <i class="fas fa-chair"></i>
+                            Total Seats
+                        </label>
+                        <input type="number" step="1" id="total_seats" name="total_seats" class="form-control"
+                            value="<?= e($formValues['total_seats']) ?>" min="<?= (int) ($show['total_seats'] - $show['available_seats']) ?>" required>
+                        <div class="seats-info">
+                            <i class="fas fa-info-circle"></i>
+                            <?= (int) $show['available_seats'] ?> of <?= (int) $show['total_seats'] ?> currently available
+                        </div>
+                    </div>
                 </div>
 
                 <button type="submit" class="btn-submit">

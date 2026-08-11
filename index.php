@@ -1,51 +1,85 @@
 <?php
-if (session_status() === PHP_SESSION_NONE) {
-    session_start();
-}
 require_once 'config.php';
 
 // Handle login
-if ($_POST['action'] ?? '' === 'login') {
-    $username = sanitize($_POST['username']);
-    $password = $_POST['password'];
+if (($_POST['action'] ?? '') === 'login') {
+    csrf_verify();
 
-    $stmt = $pdo->prepare("SELECT * FROM users WHERE username = ? OR email = ?");
-    $stmt->execute([$username, $username]);
-    $user = $stmt->fetch();
+    $username = sanitize($_POST['username'] ?? '');
+    $password = $_POST['password'] ?? '';
+    $identifier = loginIdentifier($username);
 
-    if ($user && password_verify($password, $user['password'])) {
-        $_SESSION['user_id'] = $user['id'];
-        $_SESSION['username'] = $user['username'];
-        $_SESSION['full_name'] = $user['full_name'];
-        $_SESSION['role'] = $user['role'];
-
-        if ($user['role'] === 'admin') {
-            redirect('admin/dashboard.php');
-        } else {
-            redirect('index.php');
-        }
+    if ($username === '' || $password === '') {
+        showAlert('Please enter your username/email and password.', 'error');
+    } elseif (loginIsThrottled($pdo, $identifier)) {
+        showAlert('Too many failed attempts. Please wait ' . LOGIN_LOCKOUT_MINUTES . ' minutes and try again.', 'error');
     } else {
-        showAlert('Invalid username or password!', 'error');
+        $stmt = $pdo->prepare("SELECT * FROM users WHERE username = ? OR email = ?");
+        $stmt->execute([$username, $username]);
+        $user = $stmt->fetch();
+
+        if ($user && password_verify($password, $user['password'])) {
+            recordLoginAttempt($pdo, $identifier, true);
+
+            // Keep upgrading the stored hash if PHP's default algorithm/cost changes.
+            if (password_needs_rehash($user['password'], PASSWORD_DEFAULT)) {
+                $newHash = password_hash($password, PASSWORD_DEFAULT);
+                $pdo->prepare("UPDATE users SET password = ? WHERE id = ?")->execute([$newHash, $user['id']]);
+            }
+
+            // New session ID on privilege change — prevents session fixation.
+            session_regenerate_id(true);
+            unset($_SESSION['csrf_token']); // force a fresh CSRF token for the new session
+
+            $_SESSION['user_id'] = $user['id'];
+            $_SESSION['username'] = $user['username'];
+            $_SESSION['full_name'] = $user['full_name'];
+            $_SESSION['role'] = $user['role'];
+
+            // The public site login only ever starts a regular user session.
+            // Admin-panel access is granted exclusively by admin/login.php —
+            // logging in here never sets $_SESSION['admin_id'].
+            redirect('index.php');
+        } else {
+            recordLoginAttempt($pdo, $identifier, false);
+            showAlert('Invalid username or password!', 'error');
+        }
     }
 }
 
 // Handle registration
-if ($_POST['action'] ?? '' === 'register') {
-    $username = sanitize($_POST['username']);
-    $email = sanitize($_POST['email']);
-    $password = password_hash($_POST['password'], PASSWORD_DEFAULT);
-    $full_name = sanitize($_POST['full_name']);
-    $phone = sanitize($_POST['phone']);
+if (($_POST['action'] ?? '') === 'register') {
+    csrf_verify();
 
-    try {
-        $stmt = $pdo->prepare("INSERT INTO users (username, email, password, full_name, phone) VALUES (?, ?, ?, ?, ?)");
-        $stmt->execute([$username, $email, $password, $full_name, $phone]);
-        showAlert('Registration successful! Please login.', 'success');
-    } catch (PDOException $e) {
-        if ($e->getCode() == 23000) {
-            showAlert('Username or email already exists!', 'error');
-        } else {
-            showAlert('Registration failed!', 'error');
+    $username = sanitize($_POST['username'] ?? '');
+    $email = sanitize($_POST['email'] ?? '');
+    $rawPassword = $_POST['password'] ?? '';
+    $full_name = sanitize($_POST['full_name'] ?? '');
+    $phone = sanitize($_POST['phone'] ?? '');
+
+    if (!preg_match('/^[A-Za-z0-9_]{3,50}$/', $username)) {
+        showAlert('Username must be 3-50 characters: letters, numbers, underscore only.', 'error');
+    } elseif (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
+        showAlert('Please enter a valid email address.', 'error');
+    } elseif (strlen($rawPassword) < 8) {
+        showAlert('Password must be at least 8 characters.', 'error');
+    } elseif ($full_name === '') {
+        showAlert('Please enter your full name.', 'error');
+    } elseif ($phone !== '' && !preg_match('/^[0-9+\-\s]{7,15}$/', $phone)) {
+        showAlert('Please enter a valid phone number.', 'error');
+    } else {
+        $password = password_hash($rawPassword, PASSWORD_DEFAULT);
+        try {
+            $stmt = $pdo->prepare("INSERT INTO users (username, email, password, full_name, phone) VALUES (?, ?, ?, ?, ?)");
+            $stmt->execute([$username, $email, $password, $full_name, $phone]);
+            showAlert('Registration successful! Please login.', 'success');
+        } catch (PDOException $e) {
+            if ($e->getCode() == 23000) {
+                showAlert('Username or email already exists!', 'error');
+            } else {
+                error_log('Registration failed: ' . $e->getMessage());
+                showAlert('Registration failed. Please try again.', 'error');
+            }
         }
     }
 }
@@ -1022,6 +1056,7 @@ $movies = $stmt->fetchAll();
             <?php displayAlert(); ?>
             <form method="POST" onsubmit="showLoading(this)">
                 <input type="hidden" name="action" value="login">
+                <?= csrf_field() ?>
                 <div class="form-group">
                     <label for="login_username">Username or Email</label>
                     <input type="text" id="login_username" name="username" placeholder="Enter your credentials"
@@ -1052,6 +1087,7 @@ $movies = $stmt->fetchAll();
             <?php displayAlert(); ?>
             <form method="POST" onsubmit="showLoading(this)">
                 <input type="hidden" name="action" value="register">
+                <?= csrf_field() ?>
                 <div class="form-group">
                     <label for="reg_fullname">Full Name</label>
                     <input type="text" id="reg_fullname" name="full_name" placeholder="Your full name" required>

@@ -1,14 +1,6 @@
 <?php
 require_once '../config.php';
-
-if (session_status() === PHP_SESSION_NONE) {
-    session_start();
-}
-
-if (!isset($_SESSION['admin_id'])) {
-    header("Location: login.php");
-    exit;
-}
+requireAdmin($pdo);
 
 if (!isset($_GET['id'])) {
     header("Location: manage_users.php");
@@ -26,20 +18,45 @@ if (!$user) {
 }
 
 $success_message = '';
+$error_message = '';
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    $username = sanitize($_POST['username']);
-    $full_name = sanitize($_POST['full_name']);
-    $email = sanitize($_POST['email']);
-    $role = $_POST['role'] === 'admin' ? 'admin' : 'user';
+    csrf_verify();
 
-    $stmt = $pdo->prepare("UPDATE users SET username=?, full_name=?, email=?, role=? WHERE id=?");
-    $stmt->execute([$username, $full_name, $email, $role, $id]);
+    $username = sanitize($_POST['username'] ?? '');
+    $full_name = sanitize($_POST['full_name'] ?? '');
+    $email = sanitize($_POST['email'] ?? '');
+    $role = ($_POST['role'] ?? '') === 'admin' ? 'admin' : 'user';
 
-    $success_message = 'User updated successfully!';
-    // Refresh user data
-    $stmt = $pdo->prepare("SELECT * FROM users WHERE id = ?");
-    $stmt->execute([$id]);
-    $user = $stmt->fetch();
+    if (!preg_match('/^[A-Za-z0-9_]{3,50}$/', $username)) {
+        $error_message = 'Username must be 3-50 characters: letters, numbers, underscore only.';
+    } elseif (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
+        $error_message = 'Please enter a valid email address.';
+    } elseif ($full_name === '') {
+        $error_message = 'Please enter a full name.';
+    } else {
+        try {
+            $stmt = $pdo->prepare("UPDATE users SET username=?, full_name=?, email=?, role=? WHERE id=?");
+            $stmt->execute([$username, $full_name, $email, $role, $id]);
+
+            $success_message = 'User updated successfully!';
+            // Refresh user data
+            $stmt = $pdo->prepare("SELECT * FROM users WHERE id = ?");
+            $stmt->execute([$id]);
+            $user = $stmt->fetch();
+        } catch (PDOException $e) {
+            if ($e->getCode() == 23000) {
+                $error_message = 'That username or email is already taken.';
+            } else {
+                error_log('User update failed: ' . $e->getMessage());
+                $error_message = 'Update failed. Please try again.';
+            }
+        }
+    }
+
+    // On any failure, keep what the admin typed in the form instead of the stale DB copy.
+    if ($error_message) {
+        $user = array_merge($user, compact('username', 'full_name', 'email', 'role'));
+    }
 }
 ?>
 <!DOCTYPE html>
@@ -299,6 +316,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             animation: successPulse 0.6s ease-out;
         }
 
+        .error-message {
+            background: linear-gradient(135deg, #e74c3c, #c0392b);
+            color: white;
+            padding: 15px 20px;
+            border-radius: 10px;
+            margin-bottom: 20px;
+            text-align: center;
+        }
+
         @keyframes successPulse {
             0% {
                 opacity: 0;
@@ -372,8 +398,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 <?= htmlspecialchars($success_message) ?>
             </div>
         <?php endif; ?>
+        <?php if ($error_message): ?>
+            <div class="error-message">
+                <?= e($error_message) ?>
+            </div>
+        <?php endif; ?>
 
         <form method="post">
+            <?= csrf_field() ?>
             <div class="form-group">
                 <label for="username">Username</label>
                 <input type="text" id="username" name="username" value="<?= htmlspecialchars($user['username']) ?>"
